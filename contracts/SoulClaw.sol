@@ -149,6 +149,63 @@ contract SoulClaw is ERC721, ERC2981, Ownable {
         mintPrice = newPrice;
     }
 
+    // OPERATOR 代用户 mint，NFT 归属 to 地址
+    function mintSoulFor(
+        address to,
+        bytes32 dataHash,
+        string calldata arweaveTxId,
+        string calldata imageUri,
+        string calldata soulSummary,
+        string calldata soulStatement,
+        string[] memory skills
+    ) external payable onlyOwner returns (uint256) {
+        require(!_hasMinted[to], "Already minted");
+        require(msg.value >= mintPrice, "Insufficient mint fee");
+
+        uint256 tokenId = _nextTokenId++;
+        _safeMint(to, tokenId);
+        _hasMinted[to] = true;
+
+        _souls[tokenId] = SoulData({
+            dataHash: dataHash,
+            arweaveTxId: arweaveTxId,
+            imageUri: imageUri,
+            soulSummary: soulSummary,
+            soulStatement: soulStatement,
+            skills: skills,
+            version: 1,
+            lastUpdated: block.timestamp
+        });
+
+        emit SoulMinted(tokenId, to, dataHash);
+        return tokenId;
+    }
+
+    // OPERATOR 代用户更新灵魂数据
+    function updateSoulFor(
+        address soulOwner,
+        uint256 tokenId,
+        bytes32 newDataHash,
+        string calldata newArweaveTxId,
+        string calldata newImageUri,
+        string calldata newSoulSummary,
+        string calldata newSoulStatement
+    ) external onlyOwner {
+        require(ownerOf(tokenId) == soulOwner, "Not owner of token");
+        SoulData storage soul = _souls[tokenId];
+        bytes32 oldHash = soul.dataHash;
+
+        soul.dataHash = newDataHash;
+        soul.arweaveTxId = newArweaveTxId;
+        if (bytes(newImageUri).length > 0) soul.imageUri = newImageUri;
+        if (bytes(newSoulSummary).length > 0) soul.soulSummary = newSoulSummary;
+        if (bytes(newSoulStatement).length > 0) soul.soulStatement = newSoulStatement;
+        soul.version++;
+        soul.lastUpdated = block.timestamp;
+
+        emit SoulUpdated(tokenId, oldHash, newDataHash, soul.version);
+    }
+
     function withdraw() external onlyOwner {
         payable(owner()).transfer(address(this).balance);
     }

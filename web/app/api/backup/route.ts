@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "crypto";
 import { validateApiKey } from "@/lib/api-auth";
-import { encrypt, computeDataHash } from "@/lib/server-crypto";
 import { uploadToStorage } from "@/lib/storage";
-import { hasMinted, mintSoul, updateSoul, getTokenIdForOwner } from "@/lib/chain";
+import { hasMinted, mintSoulFor, updateSoulFor, getTokenIdForOwner } from "@/lib/chain";
 import { type Address } from "viem";
-
-const DEFAULT_PASSPHRASE = process.env.SOULCLAW_DEFAULT_PASSPHRASE || "soulclaw-test-v1";
 
 export async function POST(request: NextRequest) {
   const keyInfo = validateApiKey(request);
@@ -19,25 +17,34 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const backupFile = formData.get("backup") as File | null;
-    const passphrase = (formData.get("passphrase") as string) || DEFAULT_PASSPHRASE;
+    const clientDataHash = formData.get("dataHash") as string | null;
 
     if (!backupFile) {
       return NextResponse.json({ error: "No backup file provided" }, { status: 400 });
     }
 
-    const plainData = Buffer.from(await backupFile.arrayBuffer());
-    const sizeKB = Math.round(plainData.byteLength / 1024);
+    // 服务器接收的是客户端已加密的密文, 不做任何加解密
+    const encryptedData = Buffer.from(await backupFile.arrayBuffer());
+    const sizeKB = Math.round(encryptedData.byteLength / 1024);
 
-    // 1. Encrypt
-    const { encrypted, dataHash } = await encrypt(plainData, passphrase);
+    // 服务端校验: 重新计算 SHA-256, 与客户端提供的 dataHash 比对
+    const serverHash = "0x" + createHash("sha256").update(encryptedData).digest("hex");
+    const dataHash = clientDataHash || serverHash;
 
-    // 2. Upload to storage (Arweave or mock)
-    const storageResult = await uploadToStorage(encrypted, {
+    if (clientDataHash && clientDataHash !== serverHash) {
+      return NextResponse.json(
+        { error: "dataHash mismatch: uploaded data does not match declared hash" },
+        { status: 400 }
+      );
+    }
+
+    // 1. Upload to storage (encrypted blob as-is)
+    const storageResult = await uploadToStorage(encryptedData, {
       "Soul-Owner": keyInfo.walletAddress,
       "Data-Hash": dataHash,
     });
 
-    // 3. Write on-chain (mint or update)
+    // 2. Write on-chain (mint or update)
     let txHash: string | null = null;
     let tokenId: bigint | null = null;
     let onChainError: string | null = null;
@@ -48,8 +55,9 @@ export async function POST(request: NextRequest) {
 
       if (alreadyMinted) {
         tokenId = await getTokenIdForOwner(walletAddr);
-        if (tokenId) {
-          txHash = await updateSoul({
+        if (tokenId !== null) {
+          txHash = await updateSoulFor({
+            soulOwner: walletAddr,
             tokenId,
             newDataHash: dataHash as `0x${string}`,
             newArweaveTxId: storageResult.txId,
@@ -59,7 +67,8 @@ export async function POST(request: NextRequest) {
           });
         }
       } else {
-        const result = await mintSoul({
+        const result = await mintSoulFor({
+          toAddress: walletAddr,
           dataHash: dataHash as `0x${string}`,
           arweaveTxId: storageResult.txId,
           imageUri: "",
@@ -76,13 +85,13 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: "Soul backup complete",
+      message: "Soul backup complete (zero-knowledge: server never saw plaintext)",
       wallet: keyInfo.walletAddress,
-      size: `${sizeKB} KB`,
+      size: `${sizeKB} KB (encrypted)`,
       dataHash,
-      arweaveTxId: storageResult.txId,
-      arweaveUrl: storageResult.url,
-      tokenId: tokenId ? Number(tokenId) : null,
+      storeTxId: storageResult.txId,
+      storeUrl: storageResult.url,
+      tokenId: tokenId !== null ? Number(tokenId) : null,
       txHash,
       onChainError,
     });

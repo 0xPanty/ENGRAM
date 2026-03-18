@@ -48,51 +48,92 @@ Get your API key at https://soulclaw.xyz after connecting your wallet.
 
 ### Backup (Push Soul On-Chain)
 
-Scan all OpenClaw data, encrypt with your passphrase, upload to Arweave, mint/update NFT on Base.
+Scan all OpenClaw data, encrypt locally, upload encrypted blob to API, mint/update NFT on Base.
+
+**Important: All encryption happens locally on your machine. The server never sees your plaintext data.**
 
 ```bash
 # Step 1: Collect all OpenClaw data
 SOUL_DIR="$HOME/.openclaw"
 BACKUP_FILE="/tmp/soulclaw-backup-$(date +%s).tar.gz"
 
-# List what will be backed up
 echo "=== Scanning OpenClaw data ==="
-find "$SOUL_DIR" -type f \( -name "SOUL.md" -o -name "MEMORY*" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) | head -50
+find "$SOUL_DIR" -type f \( -name "SOUL.md" -o -name "MEMORY*" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) \
+  ! -path "*/credentials/*" ! -name "*.key" ! -name "*.pem" | head -50
 du -sh "$SOUL_DIR" 2>/dev/null
 
-# Step 2: Package everything
-tar -czf "$BACKUP_FILE" -C "$HOME" .openclaw/
+# Step 2: Package (excluding private keys)
+tar -czf "$BACKUP_FILE" -C "$HOME" \
+  --exclude='.openclaw/credentials' --exclude='*.key' --exclude='*.pem' \
+  .openclaw/
 echo "Packaged: $(du -sh $BACKUP_FILE | cut -f1)"
 
-# Step 3: Upload to SoulClaw API (handles encryption + Arweave + NFT mint)
+# Step 3: Encrypt locally
+# Ask user for passphrase, request wallet signature for "SoulClaw-v1"
+# Derive key: scrypt(passphrase, salt=random32bytes) -> AES-256-GCM key
+# Encrypt: [salt(32)][iv(12)][ciphertext][tag(16)]
+# Compute dataHash: SHA-256 of encrypted blob
+ENCRYPTED_FILE="/tmp/soulclaw-encrypted-$(date +%s).bin"
+node -e "
+const crypto = require('crypto');
+const fs = require('fs');
+const passphrase = process.argv[1];
+const plain = fs.readFileSync(process.argv[2]);
+const salt = crypto.randomBytes(32);
+const key = crypto.scryptSync(passphrase, salt, 32, {N:16384,r:8,p:1});
+const iv = crypto.randomBytes(12);
+const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+const enc = Buffer.concat([cipher.update(plain), cipher.final()]);
+const tag = cipher.getAuthTag();
+const pkg = Buffer.concat([salt, iv, enc, tag]);
+fs.writeFileSync('$ENCRYPTED_FILE', pkg);
+const hash = '0x' + crypto.createHash('sha256').update(pkg).digest('hex');
+console.log(hash);
+" "\$PASSPHRASE" "$BACKUP_FILE"
+# The hash printed above is your dataHash
+
+# Step 4: Upload encrypted blob to SoulClaw API (server never sees plaintext)
 curl -X POST "https://engram-five.vercel.app/api/backup" \
   -H "Authorization: Bearer $SOULCLAW_API_KEY" \
-  -F "backup=@$BACKUP_FILE" \
-  -F "passphrase_prompt=true"
+  -F "backup=@$ENCRYPTED_FILE" \
+  -F "dataHash=\$DATA_HASH"
 
-# Clean up temp file
-rm -f "$BACKUP_FILE"
+# Clean up
+rm -f "$BACKUP_FILE" "$ENCRYPTED_FILE"
 ```
-
-The API will:
-1. Ask you to set a "soul passphrase" (first time) or enter your existing one
-2. Request a wallet signature for "SoulClaw-v1"
-3. Encrypt your data with Argon2id + AES-256-GCM
-4. Upload encrypted data to Arweave (permanent storage)
-5. Mint or update your Soul NFT on Base
 
 ### Restore (Pull Soul From Chain)
 
 ```bash
-# Download and decrypt your soul
+# Step 1: Download encrypted blob from server
+ENCRYPTED_FILE="/tmp/soulclaw-encrypted-restore.bin"
 curl -X POST "https://engram-five.vercel.app/api/restore" \
   -H "Authorization: Bearer $SOULCLAW_API_KEY" \
-  -o /tmp/soulclaw-restore.tar.gz \
-  -d '{"passphrase_prompt": true}'
+  -o "$ENCRYPTED_FILE"
 
-# Extract to OpenClaw directory
-tar -xzf /tmp/soulclaw-restore.tar.gz -C "$HOME/"
-rm -f /tmp/soulclaw-restore.tar.gz
+# Step 2: Decrypt locally
+# Ask user for passphrase (same one used during backup)
+RESTORE_FILE="/tmp/soulclaw-restore.tar.gz"
+node -e "
+const crypto = require('crypto');
+const fs = require('fs');
+const passphrase = process.argv[1];
+const pkg = fs.readFileSync(process.argv[2]);
+const salt = pkg.subarray(0, 32);
+const iv = pkg.subarray(32, 44);
+const tag = pkg.subarray(pkg.length - 16);
+const enc = pkg.subarray(44, pkg.length - 16);
+const key = crypto.scryptSync(passphrase, salt, 32, {N:16384,r:8,p:1});
+const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+decipher.setAuthTag(tag);
+const dec = Buffer.concat([decipher.update(enc), decipher.final()]);
+fs.writeFileSync('$RESTORE_FILE', dec);
+console.log('Decrypted OK');
+" "\$PASSPHRASE" "$ENCRYPTED_FILE"
+
+# Step 3: Extract to OpenClaw directory
+tar -xzf "$RESTORE_FILE" -C "$HOME/"
+rm -f "$ENCRYPTED_FILE" "$RESTORE_FILE"
 
 echo "Soul restored successfully."
 ```
@@ -107,8 +148,7 @@ curl -s "https://engram-five.vercel.app/api/status" \
     console.log('Token ID:', j.tokenId);
     console.log('Version:', j.version);
     console.log('Last Updated:', new Date(j.lastUpdated * 1000).toLocaleString());
-    console.log('Skills:', j.skills.join(', '));
-    console.log('Data Size:', j.dataSize);
+    console.log('Skills:', (j.skills || []).join(', '));
   "
 ```
 
@@ -116,7 +156,7 @@ curl -s "https://engram-five.vercel.app/api/status" \
 
 - First backup mints a new Soul NFT (costs ~0.001 ETH on Base)
 - Subsequent backups update the existing NFT (cheaper)
-- Your passphrase + wallet signature = encryption key. Both are needed to decrypt. Neither is sent to the server.
-- Data is encrypted locally before upload. The server never sees your plaintext data.
-- Arweave storage is permanent (200+ year design life)
-- API key authenticates you; passphrase protects your data
+- **Zero-knowledge**: encryption/decryption happens entirely on your machine. The server only stores and retrieves ciphertext.
+- Your passphrase is the encryption key. Lose it and your data is unrecoverable. The server cannot help.
+- Private keys, .key, .pem files are excluded from backup by default
+- API key authenticates you; passphrase protects your data -- they serve different purposes

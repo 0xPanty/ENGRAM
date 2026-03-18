@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "crypto";
 import { validateApiKey } from "@/lib/api-auth";
-import { decrypt } from "@/lib/server-crypto";
 import { downloadFromStorage } from "@/lib/storage";
 import { getTokenIdForOwner, getSoulData } from "@/lib/chain";
 import { type Address } from "viem";
-
-const DEFAULT_PASSPHRASE = process.env.SOULCLAW_DEFAULT_PASSPHRASE || "soulclaw-test-v1";
 
 export async function POST(request: NextRequest) {
   const keyInfo = validateApiKey(request);
@@ -17,22 +15,21 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    let passphrase = DEFAULT_PASSPHRASE;
-    let arweaveTxId: string | undefined;
+    let storeTxId: string | undefined;
+    let expectedDataHash: string | undefined;
 
     try {
       const body = await request.json();
-      if (body.passphrase) passphrase = body.passphrase;
-      if (body.arweaveTxId) arweaveTxId = body.arweaveTxId;
+      if (body.storeTxId) storeTxId = body.storeTxId;
     } catch {
-      // No body or not JSON, use defaults
+      // No body or not JSON
     }
 
     // If no txId provided, look it up from chain
-    if (!arweaveTxId) {
+    if (!storeTxId) {
       const walletAddr = keyInfo.walletAddress as Address;
       const tokenId = await getTokenIdForOwner(walletAddr);
-      if (!tokenId) {
+      if (tokenId === null) {
         return NextResponse.json(
           { error: "No soul found for this wallet. Back up first." },
           { status: 404 }
@@ -41,30 +38,42 @@ export async function POST(request: NextRequest) {
 
       const soulData = await getSoulData(tokenId) as unknown as {
         arweaveTxId: string;
+        dataHash: string;
       };
-      arweaveTxId = soulData.arweaveTxId;
-      if (!arweaveTxId) {
+      storeTxId = soulData.arweaveTxId;
+      expectedDataHash = soulData.dataHash;
+
+      if (!storeTxId) {
         return NextResponse.json(
-          { error: "Soul exists but no Arweave data found." },
+          { error: "Soul exists but no storage data found." },
           { status: 404 }
         );
       }
     }
 
-    // Download encrypted data
-    const encryptedData = await downloadFromStorage(arweaveTxId);
+    // Download encrypted data (server never decrypts, client does)
+    const encryptedData = await downloadFromStorage(storeTxId);
 
-    // Decrypt
-    const decryptedData = await decrypt(encryptedData, passphrase);
+    // Verify integrity against on-chain dataHash if available
+    if (expectedDataHash) {
+      const downloadHash = "0x" + createHash("sha256").update(encryptedData).digest("hex");
+      if (downloadHash !== expectedDataHash) {
+        return NextResponse.json(
+          { error: "Data integrity check failed: downloaded data hash does not match on-chain record" },
+          { status: 500 }
+        );
+      }
+    }
 
-    // Return as downloadable tar.gz
-    return new Response(new Uint8Array(decryptedData), {
+    // Return encrypted blob as-is (client decrypts locally)
+    return new Response(new Uint8Array(encryptedData), {
       status: 200,
       headers: {
-        "Content-Type": "application/gzip",
-        "Content-Disposition": `attachment; filename="soul-restore-${Date.now()}.tar.gz"`,
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": `attachment; filename="soul-encrypted-${Date.now()}.bin"`,
         "X-Wallet": keyInfo.walletAddress,
-        "X-Arweave-TxId": arweaveTxId,
+        "X-Store-TxId": storeTxId,
+        "X-Data-Hash": expectedDataHash ?? "",
       },
     });
   } catch (e) {

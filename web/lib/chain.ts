@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, http, type Address, type Hash } from "viem";
+import { createPublicClient, createWalletClient, http, parseEventLogs, type Address, type Hash } from "viem";
 import { baseSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { SOULCLAW_ABI, SOULCLAW_ADDRESS } from "./contract";
@@ -51,14 +51,14 @@ export async function getTokenIdForOwner(address: Address): Promise<bigint | nul
 
   if (balance === 0n) return null;
 
-  // SoulClaw is 1-per-address, scan from tokenId 1
   const totalSupply = (await publicClient.readContract({
     address: SOULCLAW_ADDRESS,
     abi: SOULCLAW_ABI,
     functionName: "totalSupply",
   })) as bigint;
 
-  for (let i = 1n; i <= totalSupply; i++) {
+  // tokenId 从 0 开始, totalSupply 是已铸造数量
+  for (let i = 0n; i < totalSupply; i++) {
     try {
       const owner = (await publicClient.readContract({
         address: SOULCLAW_ADDRESS,
@@ -74,7 +74,9 @@ export async function getTokenIdForOwner(address: Address): Promise<bigint | nul
   return null;
 }
 
-export async function mintSoul(params: {
+// OPERATOR 代用户 mint, NFT 归属 toAddress
+export async function mintSoulFor(params: {
+  toAddress: Address;
   dataHash: `0x${string}`;
   arweaveTxId: string;
   imageUri: string;
@@ -88,9 +90,10 @@ export async function mintSoul(params: {
   const txHash = await wallet.writeContract({
     address: SOULCLAW_ADDRESS,
     abi: SOULCLAW_ABI,
-    functionName: "mintSoul",
+    functionName: "mintSoulFor",
     args: [
-      params.dataHash as `0x${string}`,
+      params.toAddress,
+      params.dataHash,
       params.arweaveTxId,
       params.imageUri,
       params.soulSummary,
@@ -101,20 +104,21 @@ export async function mintSoul(params: {
   });
 
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-  // Parse SoulMinted event to get tokenId
-  const mintEvent = receipt.logs.find(
-    (log) => log.topics[0] === "0x" // Will be matched by topic
-  );
 
-  // tokenId is the first indexed param in SoulMinted event
-  const tokenId = mintEvent?.topics[1]
-    ? BigInt(mintEvent.topics[1])
-    : 1n;
+  const events = parseEventLogs({
+    abi: SOULCLAW_ABI,
+    logs: receipt.logs,
+    eventName: "SoulMinted",
+  });
+
+  const tokenId = events.length > 0 ? (events[0].args as { tokenId: bigint }).tokenId : 0n;
 
   return { txHash, tokenId };
 }
 
-export async function updateSoul(params: {
+// OPERATOR 代用户更新灵魂数据
+export async function updateSoulFor(params: {
+  soulOwner: Address;
   tokenId: bigint;
   newDataHash: `0x${string}`;
   newArweaveTxId: string;
@@ -127,10 +131,11 @@ export async function updateSoul(params: {
   return wallet.writeContract({
     address: SOULCLAW_ADDRESS,
     abi: SOULCLAW_ABI,
-    functionName: "updateSoul",
+    functionName: "updateSoulFor",
     args: [
+      params.soulOwner,
       params.tokenId,
-      params.newDataHash as `0x${string}`,
+      params.newDataHash,
       params.newArweaveTxId,
       params.newImageUri,
       params.newSoulSummary,

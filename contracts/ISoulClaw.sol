@@ -38,4 +38,24 @@ interface ISoulClaw {
     function updateSkills(uint256 tokenId, string[] memory newSkills) external;
 
     function getSoulData(uint256 tokenId) external view returns (SoulData memory);
+
+    function mintSoulFor(
+        address to,
+        bytes32 dataHash,
+        string calldata arweaveTxId,
+        string calldata imageUri,
+        string calldata soulSummary,
+        string calldata soulStatement,
+        string[] memory skills
+    ) external payable returns (uint256);
+
+    function updateSoulFor(
+        address soulOwner,
+        uint256 tokenId,
+        bytes32 newDataHash,
+        string calldata newArweaveTxId,
+        string calldata newImageUri,
+        string calldata newSoulSummary,
+        string calldata newSoulStatement
+    ) external;
 }

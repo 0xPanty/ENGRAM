@@ -240,6 +240,90 @@ describe("SoulClaw", () => {
     });
   });
 
+  describe("mintSoulFor (operator mints for user)", () => {
+    it("should mint NFT owned by target address, not deployer", async () => {
+      const { soulClaw, owner, user1 } = await networkHelpers.loadFixture(deployFixture);
+      await soulClaw.write.mintSoulFor(
+        [user1.account.address, SAMPLE_DATA_HASH, SAMPLE_ARWEAVE_TX, SAMPLE_IMAGE_URI, SAMPLE_SUMMARY, SAMPLE_STATEMENT, SAMPLE_SKILLS],
+        { value: parseEther("0.001"), account: owner.account }
+      );
+      const nftOwner = await soulClaw.read.ownerOf([0n]);
+      assert.equal(nftOwner.toLowerCase(), user1.account.address.toLowerCase());
+      assert.equal(await soulClaw.read.hasMinted([user1.account.address]), true);
+      assert.equal(await soulClaw.read.hasMinted([owner.account.address]), false);
+    });
+
+    it("should reject mintSoulFor from non-owner", async () => {
+      const { soulClaw, user1, user2 } = await networkHelpers.loadFixture(deployFixture);
+      await assert.rejects(
+        soulClaw.write.mintSoulFor(
+          [user2.account.address, SAMPLE_DATA_HASH, SAMPLE_ARWEAVE_TX, SAMPLE_IMAGE_URI, SAMPLE_SUMMARY, SAMPLE_STATEMENT, SAMPLE_SKILLS],
+          { value: parseEther("0.001"), account: user1.account }
+        )
+      );
+    });
+
+    it("should reject duplicate mintSoulFor for same target", async () => {
+      const { soulClaw, owner, user1 } = await networkHelpers.loadFixture(deployFixture);
+      await soulClaw.write.mintSoulFor(
+        [user1.account.address, SAMPLE_DATA_HASH, SAMPLE_ARWEAVE_TX, SAMPLE_IMAGE_URI, SAMPLE_SUMMARY, SAMPLE_STATEMENT, SAMPLE_SKILLS],
+        { value: parseEther("0.001"), account: owner.account }
+      );
+      await assert.rejects(
+        soulClaw.write.mintSoulFor(
+          [user1.account.address, NEW_DATA_HASH, "tx2", SAMPLE_IMAGE_URI, SAMPLE_SUMMARY, SAMPLE_STATEMENT, []],
+          { value: parseEther("0.001"), account: owner.account }
+        )
+      );
+    });
+  });
+
+  describe("updateSoulFor (operator updates for user)", () => {
+    it("should update soul data when operator specifies correct owner", async () => {
+      const { soulClaw, owner, user1 } = await networkHelpers.loadFixture(deployFixture);
+      await soulClaw.write.mintSoulFor(
+        [user1.account.address, SAMPLE_DATA_HASH, SAMPLE_ARWEAVE_TX, SAMPLE_IMAGE_URI, SAMPLE_SUMMARY, SAMPLE_STATEMENT, SAMPLE_SKILLS],
+        { value: parseEther("0.001"), account: owner.account }
+      );
+      await soulClaw.write.updateSoulFor(
+        [user1.account.address, 0n, NEW_DATA_HASH, "newTx", "", "", ""],
+        { account: owner.account }
+      );
+      const soul = await soulClaw.read.getSoulData([0n]);
+      assert.equal(soul.dataHash, NEW_DATA_HASH);
+      assert.equal(soul.arweaveTxId, "newTx");
+      assert.equal(soul.version, 2n);
+    });
+
+    it("should reject updateSoulFor with wrong owner address", async () => {
+      const { soulClaw, owner, user1, user2 } = await networkHelpers.loadFixture(deployFixture);
+      await soulClaw.write.mintSoulFor(
+        [user1.account.address, SAMPLE_DATA_HASH, SAMPLE_ARWEAVE_TX, SAMPLE_IMAGE_URI, SAMPLE_SUMMARY, SAMPLE_STATEMENT, SAMPLE_SKILLS],
+        { value: parseEther("0.001"), account: owner.account }
+      );
+      await assert.rejects(
+        soulClaw.write.updateSoulFor(
+          [user2.account.address, 0n, NEW_DATA_HASH, "newTx", "", "", ""],
+          { account: owner.account }
+        )
+      );
+    });
+
+    it("should reject updateSoulFor from non-owner (non-operator)", async () => {
+      const { soulClaw, owner, user1 } = await networkHelpers.loadFixture(deployFixture);
+      await soulClaw.write.mintSoulFor(
+        [user1.account.address, SAMPLE_DATA_HASH, SAMPLE_ARWEAVE_TX, SAMPLE_IMAGE_URI, SAMPLE_SUMMARY, SAMPLE_STATEMENT, SAMPLE_SKILLS],
+        { value: parseEther("0.001"), account: owner.account }
+      );
+      await assert.rejects(
+        soulClaw.write.updateSoulFor(
+          [user1.account.address, 0n, NEW_DATA_HASH, "newTx", "", "", ""],
+          { account: user1.account }
+        )
+      );
+    });
+  });
+
   describe("supportsInterface", () => {
     it("should support ERC-721 and ERC-2981", async () => {
       const { soulClaw } = await networkHelpers.loadFixture(deployFixture);
