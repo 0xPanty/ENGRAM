@@ -3,6 +3,12 @@ import hardhatToolboxViem from "@nomicfoundation/hardhat-toolbox-viem";
 
 export default defineConfig({
   plugins: [hardhatToolboxViem],
+  etherscan: {
+    apiKey: {
+      baseSepolia: configVariable("BASESCAN_API_KEY"),
+      base: configVariable("BASESCAN_API_KEY"),
+    },
+  },
   paths: {
     tests: {
       nodejs: "./test",
