@@ -3,7 +3,7 @@ import { randomBytes, createCipheriv, createDecipheriv, createHash, scrypt as sc
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 const KEY_LENGTH = 32;
-const SCRYPT_N = 2 ** 17;
+const SCRYPT_N = 2 ** 14; // 16MB memory, safe for Vercel Serverless
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 
