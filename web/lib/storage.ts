@@ -32,7 +32,7 @@ export async function downloadFromStorage(txId: string): Promise<Buffer> {
 // --- 0G Storage implementation ---
 
 async function uploadTo0G(data: Buffer): Promise<StorageResult> {
-  const { ZgFile, Indexer } = await import("@0glabs/0g-ts-sdk");
+  const { ZgFile, Indexer } = await import("@0gfoundation/0g-ts-sdk");
   const { ethers } = await import("ethers");
 
   const provider = new ethers.JsonRpcProvider(ZG_RPC_URL);
@@ -68,7 +68,7 @@ async function uploadTo0G(data: Buffer): Promise<StorageResult> {
 }
 
 async function downloadFrom0G(rootHash: string): Promise<Buffer> {
-  const { Indexer } = await import("@0glabs/0g-ts-sdk");
+  const { Indexer } = await import("@0gfoundation/0g-ts-sdk");
 
   const indexer = new Indexer(ZG_INDEXER_RPC);
 
