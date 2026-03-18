@@ -1,25 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateApiKey } from "@/lib/api-auth";
+import { getTokenIdForOwner, getSoulData } from "@/lib/chain";
+import { type Address } from "viem";
 
-/**
- * GET /api/status
- *
- * 返回用户灵魂的链上状态信息
- */
 export async function GET(request: NextRequest) {
   const keyInfo = validateApiKey(request);
   if (!keyInfo) {
     return NextResponse.json(
-      { error: "Invalid or missing API key. Get one at https://soulclaw.xyz" },
+      { error: "Invalid or missing API key" },
       { status: 401 }
     );
   }
 
   try {
-    // TODO Phase 2: 从链上读取真实数据
-    // const soulData = await readContract({ functionName: 'getSoulData', args: [tokenId] })
+    const walletAddr = keyInfo.walletAddress as Address;
+    const tokenId = await getTokenIdForOwner(walletAddr);
 
-    if (!keyInfo.tokenId) {
+    if (!tokenId) {
       return NextResponse.json({
         hasSoul: false,
         wallet: keyInfo.walletAddress,
@@ -27,17 +24,35 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Phase 1: 返回模拟数据
+    const raw = await getSoulData(tokenId);
+    const soulData = raw as unknown as {
+      dataHash: string;
+      arweaveTxId: string;
+      imageUri: string;
+      soulSummary: string;
+      soulStatement: string;
+      skills: string[];
+      version: bigint;
+      lastUpdated: bigint;
+    };
+    const { dataHash, arweaveTxId, imageUri, soulSummary, soulStatement, skills, version, lastUpdated } = soulData;
+
     return NextResponse.json({
       hasSoul: true,
       wallet: keyInfo.walletAddress,
-      tokenId: keyInfo.tokenId,
-      version: 1,
-      lastUpdated: Math.floor(Date.now() / 1000),
-      skills: [],
-      dataSize: "0 KB",
+      tokenId: Number(tokenId),
+      dataHash,
+      arweaveTxId,
+      arweaveUrl: arweaveTxId ? `https://arweave.net/${arweaveTxId}` : null,
+      imageUri,
+      soulSummary,
+      soulStatement,
+      skills,
+      version: Number(version),
+      lastUpdated: Number(lastUpdated),
     });
-  } catch {
-    return NextResponse.json({ error: "Failed to fetch status" }, { status: 500 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
+    return NextResponse.json({ error: `Failed to fetch status: ${msg}` }, { status: 500 });
   }
 }

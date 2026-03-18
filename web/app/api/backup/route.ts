@@ -1,20 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateApiKey } from "@/lib/api-auth";
+import { encrypt, computeDataHash } from "@/lib/server-crypto";
+import { uploadToStorage } from "@/lib/storage";
+import { hasMinted, mintSoul, updateSoul, getTokenIdForOwner } from "@/lib/chain";
+import { type Address } from "viem";
 
-/**
- * POST /api/backup
- *
- * 接收 Agent 上传的 tar.gz 备份包。
- * 服务端处理：加密 -> 上传 Arweave -> mint/update NFT
- *
- * Phase 1: 接收文件，返回成功（加密和上链逻辑待接入）
- * Phase 2: 完整加密 + Arweave + NFT 流程
- */
+const DEFAULT_PASSPHRASE = process.env.SOULCLAW_DEFAULT_PASSPHRASE || "soulclaw-test-v1";
+
 export async function POST(request: NextRequest) {
   const keyInfo = validateApiKey(request);
   if (!keyInfo) {
     return NextResponse.json(
-      { error: "Invalid or missing API key. Get one at https://soulclaw.xyz" },
+      { error: "Invalid or missing API key" },
       { status: 401 }
     );
   }
@@ -22,34 +19,75 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const backupFile = formData.get("backup") as File | null;
+    const passphrase = (formData.get("passphrase") as string) || DEFAULT_PASSPHRASE;
 
     if (!backupFile) {
       return NextResponse.json({ error: "No backup file provided" }, { status: 400 });
     }
 
-    const bytes = await backupFile.arrayBuffer();
-    const sizeKB = Math.round(bytes.byteLength / 1024);
+    const plainData = Buffer.from(await backupFile.arrayBuffer());
+    const sizeKB = Math.round(plainData.byteLength / 1024);
 
-    // TODO Phase 2: 实际流程
-    // 1. 用用户提供的 passphrase + wallet signature 加密数据
-    // 2. 上传加密数据到 Arweave (Irys SDK)
-    // 3. 计算 dataHash = SHA256(encrypted)
-    // 4. 调用合约 mintSoul() 或 updateSoul()
-    // 5. 返回 tokenId + txHash
+    // 1. Encrypt
+    const { encrypted, dataHash } = await encrypt(plainData, passphrase);
 
-    // Phase 1: 模拟成功响应
+    // 2. Upload to storage (Arweave or mock)
+    const storageResult = await uploadToStorage(encrypted, {
+      "Soul-Owner": keyInfo.walletAddress,
+      "Data-Hash": dataHash,
+    });
+
+    // 3. Write on-chain (mint or update)
+    let txHash: string | null = null;
+    let tokenId: bigint | null = null;
+    let onChainError: string | null = null;
+
+    try {
+      const walletAddr = keyInfo.walletAddress as Address;
+      const alreadyMinted = await hasMinted(walletAddr);
+
+      if (alreadyMinted) {
+        tokenId = await getTokenIdForOwner(walletAddr);
+        if (tokenId) {
+          txHash = await updateSoul({
+            tokenId,
+            newDataHash: dataHash as `0x${string}`,
+            newArweaveTxId: storageResult.txId,
+            newImageUri: "",
+            newSoulSummary: `Soul backup ${new Date().toISOString()}`,
+            newSoulStatement: "",
+          });
+        }
+      } else {
+        const result = await mintSoul({
+          dataHash: dataHash as `0x${string}`,
+          arweaveTxId: storageResult.txId,
+          imageUri: "",
+          soulSummary: `Soul backup ${new Date().toISOString()}`,
+          soulStatement: "My AI soul, on-chain forever.",
+          skills: [],
+        });
+        txHash = result.txHash;
+        tokenId = result.tokenId;
+      }
+    } catch (e) {
+      onChainError = e instanceof Error ? e.message : String(e);
+    }
+
     return NextResponse.json({
       success: true,
-      message: "Soul backup received",
+      message: "Soul backup complete",
       wallet: keyInfo.walletAddress,
       size: `${sizeKB} KB`,
-      // 以下字段在 Phase 2 会填入真实值
-      tokenId: keyInfo.tokenId ?? null,
-      arweaveTxId: null,
-      txHash: null,
-      version: 1,
+      dataHash,
+      arweaveTxId: storageResult.txId,
+      arweaveUrl: storageResult.url,
+      tokenId: tokenId ? Number(tokenId) : null,
+      txHash,
+      onChainError,
     });
-  } catch {
-    return NextResponse.json({ error: "Failed to process backup" }, { status: 500 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
+    return NextResponse.json({ error: `Failed to process backup: ${msg}` }, { status: 500 });
   }
 }
