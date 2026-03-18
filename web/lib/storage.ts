@@ -1,71 +1,92 @@
-import Arweave from "arweave";
+import { writeFileSync, readFileSync, unlinkSync, existsSync, mkdirSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
 export interface StorageResult {
   txId: string;
   url: string;
 }
 
-const USE_ARWEAVE = !!process.env.ARWEAVE_KEY;
+const ZG_RPC_URL = process.env.ZG_RPC_URL || "https://evmrpc-testnet.0g.ai";
+const ZG_INDEXER_RPC = process.env.ZG_INDEXER_RPC || "https://indexer-storage-testnet-turbo.0g.ai";
+const ZG_PRIVATE_KEY = process.env.ZG_PRIVATE_KEY || process.env.OPERATOR_PRIVATE_KEY;
+
+const USE_0G = !!ZG_PRIVATE_KEY && process.env.STORAGE_BACKEND !== "memory";
 
 const memoryStore = new Map<string, Buffer>();
 
 export async function uploadToStorage(data: Buffer, tags?: Record<string, string>): Promise<StorageResult> {
-  if (USE_ARWEAVE) {
-    return uploadToArweave(data, tags);
+  if (USE_0G) {
+    return uploadTo0G(data);
   }
   return uploadToMemory(data);
 }
 
 export async function downloadFromStorage(txId: string): Promise<Buffer> {
-  if (USE_ARWEAVE) {
-    return downloadFromArweave(txId);
+  if (USE_0G) {
+    return downloadFrom0G(txId);
   }
   return downloadFromMemory(txId);
 }
 
-// --- Arweave implementation ---
+// --- 0G Storage implementation ---
 
-async function uploadToArweave(data: Buffer, tags?: Record<string, string>): Promise<StorageResult> {
-  const arweave = Arweave.init({
-    host: "arweave.net",
-    port: 443,
-    protocol: "https",
-  });
+async function uploadTo0G(data: Buffer): Promise<StorageResult> {
+  const { ZgFile, Indexer } = await import("@0glabs/0g-ts-sdk");
+  const { ethers } = await import("ethers");
 
-  const key = JSON.parse(process.env.ARWEAVE_KEY!);
-  const tx = await arweave.createTransaction({ data }, key);
+  const provider = new ethers.JsonRpcProvider(ZG_RPC_URL);
+  const signer = new ethers.Wallet(ZG_PRIVATE_KEY!, provider);
+  const indexer = new Indexer(ZG_INDEXER_RPC);
 
-  tx.addTag("Content-Type", "application/octet-stream");
-  tx.addTag("App-Name", "SoulClaw");
-  tx.addTag("App-Version", "1.0");
-  if (tags) {
-    for (const [k, v] of Object.entries(tags)) {
-      tx.addTag(k, v);
-    }
+  // Write to temp file (SDK requires file path)
+  const tmpDir = join(tmpdir(), "soulclaw");
+  if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
+  const tmpFile = join(tmpDir, `upload_${Date.now()}.bin`);
+
+  try {
+    writeFileSync(tmpFile, data);
+
+    const zgFile = await ZgFile.fromFilePath(tmpFile);
+    const [tree, treeErr] = await zgFile.merkleTree();
+    if (treeErr) throw new Error(`Merkle tree error: ${treeErr}`);
+
+    const rootHash = tree!.rootHash()!;
+
+    const [tx, uploadErr] = await indexer.upload(zgFile, ZG_RPC_URL, signer as any);
+    if (uploadErr) throw new Error(`0G upload error: ${uploadErr}`);
+
+    await zgFile.close();
+
+    return {
+      txId: rootHash,
+      url: `0g://${rootHash}`,
+    };
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
   }
-
-  await arweave.transactions.sign(tx, key);
-  const response = await arweave.transactions.post(tx);
-
-  if (response.status !== 200 && response.status !== 202) {
-    throw new Error(`Arweave upload failed: ${response.status}`);
-  }
-
-  return {
-    txId: tx.id,
-    url: `https://arweave.net/${tx.id}`,
-  };
 }
 
-async function downloadFromArweave(txId: string): Promise<Buffer> {
-  const response = await fetch(`https://arweave.net/${txId}`);
-  if (!response.ok) {
-    throw new Error(`Arweave download failed: ${response.status}`);
+async function downloadFrom0G(rootHash: string): Promise<Buffer> {
+  const { Indexer } = await import("@0glabs/0g-ts-sdk");
+
+  const indexer = new Indexer(ZG_INDEXER_RPC);
+
+  const tmpDir = join(tmpdir(), "soulclaw");
+  if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true });
+  const tmpFile = join(tmpDir, `download_${Date.now()}.bin`);
+
+  try {
+    const err = await indexer.download(rootHash, tmpFile, true);
+    if (err) throw new Error(`0G download error: ${err}`);
+
+    return readFileSync(tmpFile);
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
   }
-  return Buffer.from(await response.arrayBuffer());
 }
 
-// --- Memory mock (for testing without Arweave) ---
+// --- Memory mock (for local dev / testing without 0G token) ---
 
 function uploadToMemory(data: Buffer): StorageResult {
   const txId = `mock_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
