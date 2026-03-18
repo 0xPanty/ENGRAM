@@ -65,7 +65,7 @@ tar -czf "$BACKUP_FILE" -C "$HOME" .openclaw/
 echo "Packaged: $(du -sh $BACKUP_FILE | cut -f1)"
 
 # Step 3: Upload to SoulClaw API (handles encryption + Arweave + NFT mint)
-curl -X POST "http://localhost:3000/api/backup" \
+curl -X POST "https://engram-five.vercel.app/api/backup" \
   -H "Authorization: Bearer $SOULCLAW_API_KEY" \
   -F "backup=@$BACKUP_FILE" \
   -F "passphrase_prompt=true"
@@ -85,7 +85,7 @@ The API will:
 
 ```bash
 # Download and decrypt your soul
-curl -X POST "http://localhost:3000/api/restore" \
+curl -X POST "https://engram-five.vercel.app/api/restore" \
   -H "Authorization: Bearer $SOULCLAW_API_KEY" \
   -o /tmp/soulclaw-restore.tar.gz \
   -d '{"passphrase_prompt": true}'
@@ -100,7 +100,7 @@ echo "Soul restored successfully."
 ### Check Status
 
 ```bash
-curl -s "http://localhost:3000/api/status" \
+curl -s "https://engram-five.vercel.app/api/status" \
   -H "Authorization: Bearer $SOULCLAW_API_KEY" | node -e "
     const d = require('fs').readFileSync(0,'utf8');
     const j = JSON.parse(d);
