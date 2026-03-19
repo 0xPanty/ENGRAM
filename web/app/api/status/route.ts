@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
     const walletAddr = keyInfo.walletAddress as Address;
     const tokenId = await getTokenIdForOwner(walletAddr);
 
-    if (!tokenId) {
+    if (tokenId === null) {
       return NextResponse.json({
         hasSoul: false,
         wallet: keyInfo.walletAddress,

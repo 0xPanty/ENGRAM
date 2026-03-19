@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { validateApiKey } from "@/lib/api-auth";
 import { downloadFromStorage } from "@/lib/storage";
 import { getTokenIdForOwner, getSoulData } from "@/lib/chain";
+import { decodeIndexPointer, loadEngramIndex } from "@/lib/engram";
 import { type Address } from "viem";
 
 export async function POST(request: NextRequest) {
@@ -17,15 +18,17 @@ export async function POST(request: NextRequest) {
   try {
     let storeTxId: string | undefined;
     let expectedDataHash: string | undefined;
+    let requestedVersion: number | undefined;
 
     try {
       const body = await request.json();
       if (body.storeTxId) storeTxId = body.storeTxId;
+      if (body.version !== undefined) requestedVersion = Number(body.version);
     } catch {
       // No body or not JSON
     }
 
-    // If no txId provided, look it up from chain
+    // If no txId provided, look it up from chain (optionally using engram version)
     if (!storeTxId) {
       const walletAddr = keyInfo.walletAddress as Address;
       const tokenId = await getTokenIdForOwner(walletAddr);
@@ -39,9 +42,40 @@ export async function POST(request: NextRequest) {
       const soulData = await getSoulData(tokenId) as unknown as {
         arweaveTxId: string;
         dataHash: string;
+        soulSummary: string;
       };
-      storeTxId = soulData.arweaveTxId;
-      expectedDataHash = soulData.dataHash;
+
+      // If a specific version is requested, look it up in the engram index
+      if (requestedVersion !== undefined) {
+        const { indexTxId } = decodeIndexPointer(soulData.soulSummary);
+        if (!indexTxId) {
+          return NextResponse.json(
+            { error: "No engram index found. Version-based restore requires the engram system." },
+            { status: 404 }
+          );
+        }
+        const index = await loadEngramIndex(indexTxId);
+        if (!index) {
+          return NextResponse.json(
+            { error: "Failed to load engram index from storage." },
+            { status: 500 }
+          );
+        }
+        const entry = index.engrams.find((e) => e.version === requestedVersion);
+        if (!entry) {
+          const available = index.engrams.map((e) => e.version).join(", ");
+          return NextResponse.json(
+            { error: `Engram version ${requestedVersion} not found. Available: ${available}` },
+            { status: 404 }
+          );
+        }
+        storeTxId = entry.storeTxId;
+        expectedDataHash = entry.dataHash;
+      } else {
+        // Default: latest version from chain
+        storeTxId = soulData.arweaveTxId;
+        expectedDataHash = soulData.dataHash;
+      }
 
       if (!storeTxId) {
         return NextResponse.json(
@@ -54,7 +88,7 @@ export async function POST(request: NextRequest) {
     // Download encrypted data (server never decrypts, client does)
     const encryptedData = await downloadFromStorage(storeTxId);
 
-    // Verify integrity against on-chain dataHash if available
+    // Verify integrity against dataHash if available
     if (expectedDataHash) {
       const downloadHash = "0x" + createHash("sha256").update(encryptedData).digest("hex");
       if (downloadHash !== expectedDataHash) {
@@ -74,6 +108,7 @@ export async function POST(request: NextRequest) {
         "X-Wallet": keyInfo.walletAddress,
         "X-Store-TxId": storeTxId,
         "X-Data-Hash": expectedDataHash ?? "",
+        "X-Engram-Version": requestedVersion !== undefined ? String(requestedVersion) : "latest",
       },
     });
   } catch (e) {
