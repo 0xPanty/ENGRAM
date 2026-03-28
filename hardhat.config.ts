@@ -17,6 +17,7 @@ export default defineConfig({
   solidity: {
     version: "0.8.28",
     settings: {
+      viaIR: true,
       optimizer: {
         enabled: true,
         runs: 200,
